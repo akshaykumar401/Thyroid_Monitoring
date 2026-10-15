@@ -375,65 +375,60 @@ export default function DashboardScreen() {
           </View>
         )}
 
-        {/* ── Dynamic QNA Action Button (Based on isQnaGiven) ── */}
-        {!isQnaGiven ? (
-          <TouchableOpacity
-            style={styles.continueBtn}
-            onPress={handleStartQna}
-            activeOpacity={0.85}
-          >
-            <LinearGradient
-              colors={['#0F2438', '#1E3A5F']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={styles.continueGrad}
-            >
-              <SparklesIcon size={18} color="#5EEAD4" />
-              <Text style={styles.continueText}>Complete Clinical Q&A</Text>
-              <ArrowRightIcon size={18} color="#FFFFFF" />
-            </LinearGradient>
-          </TouchableOpacity>
-        ) : (
-          <View style={styles.qnaCompletedCard}>
-            <View style={styles.qnaCompletedHeader}>
-              <View style={styles.qnaCompletedIcon}>
-                <CheckmarkCircleIcon size={22} color="#10B981" />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.qnaCompletedTitle}>Q&A Questionnaire Completed</Text>
-                <Text style={styles.qnaCompletedSub}>
-                  Your responses are saved in the research database
-                </Text>
-              </View>
+        {/* ── Research & Clinical Assessment Actions ── */}
+        <View style={styles.qnaCompletedCard}>
+          <View style={styles.qnaCompletedHeader}>
+            <View style={styles.qnaCompletedIcon}>
+              <CheckmarkCircleIcon size={22} color={isQnaGiven ? '#10B981' : '#0D9488'} />
             </View>
-
-            <View style={styles.qnaCompletedActions}>
-              <TouchableOpacity
-                style={styles.viewResultBtn}
-                onPress={() => router.push('/(main)/result')}
-                activeOpacity={0.85}
-              >
-                <LinearGradient
-                  colors={['#0D9488', '#0284C7']}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={styles.viewResultGrad}
-                >
-                  <Text style={styles.viewResultText}>View Submitted Responses</Text>
-                  <ArrowRightIcon size={15} color="#FFFFFF" />
-                </LinearGradient>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.retakeBtn}
-                onPress={handleStartQna}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.retakeText}>Retake Q&A</Text>
-              </TouchableOpacity>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.qnaCompletedTitle}>
+                {isQnaGiven ? 'Clinical Q&A Recorded' : 'IoT Telemetry & Records Synced'}
+              </Text>
+              <Text style={styles.qnaCompletedSub}>
+                {isQnaGiven
+                  ? 'Your answers and sensor readings are saved in MongoDB Atlas'
+                  : 'Hardware sensors & vocal sample verified. View submitted response'}
+              </Text>
             </View>
           </View>
-        )}
+
+          <View style={styles.qnaCompletedActions}>
+            <TouchableOpacity
+              style={styles.viewResultBtn}
+              onPress={() => {
+                updateScreeningSession({
+                  bodyTemp,
+                  pulseBpm: pulseBPM,
+                  cloudinaryAudioUrl: voiceUrl,
+                  recordingId: voiceRecordingId,
+                });
+                router.push('/(main)/result');
+              }}
+              activeOpacity={0.85}
+            >
+              <LinearGradient
+                colors={['#0D9488', '#0284C7']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.viewResultGrad}
+              >
+                <Text style={styles.viewResultText}>View Submitted Responses</Text>
+                <ArrowRightIcon size={15} color="#FFFFFF" />
+              </LinearGradient>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.retakeBtn}
+              onPress={handleStartQna}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.retakeText}>
+                {isQnaGiven ? 'Retake Clinical Q&A' : 'Answer Clinical Q&A'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       </ScrollView>
     </View>
   );

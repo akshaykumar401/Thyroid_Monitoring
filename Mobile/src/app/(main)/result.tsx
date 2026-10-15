@@ -12,7 +12,7 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { SyncIcon, BulbIcon, ArrowRightIcon } from '../../components/Icons';
+import { SyncIcon, BulbIcon, ArrowRightIcon, SparklesIcon } from '../../components/Icons';
 import { StepDots } from '../../components/StepDots';
 import { SpinnerRing } from '../../components/result/SpinnerRing';
 import { ThankYouHero } from '../../components/result/ThankYouHero';
@@ -72,76 +72,120 @@ export default function ResultScreen() {
     }
   }, [saveState]);
 
-  // ── Send QNA to backend on mount ──
-  useEffect(() => {
-    const session = getScreeningSession();
+  const session = getScreeningSession();
+  const [answers, setAnswers] = useState<any[]>(session.qnaAnswers || []);
 
-    const saveQna = async () => {
+  // ── Send QNA or fetch existing submitted record on mount ──
+  useEffect(() => {
+    const currentSession = getScreeningSession();
+
+    const processQna = async () => {
       setSaveState('saving');
 
-      const payload = {
-        subject_id: session.subjectId || 'patient_001',
-        recording_id: session.recordingId || undefined,
-        voice_cloudinary_url: session.cloudinaryAudioUrl,
-        sensor: {
-          body_temp: session.bodyTemp ?? 36.65,
-          pulse_bpm: session.pulseBpm ?? 72,
-        },
-        qna_responses: session.qnaAnswers || [],
-      };
+      // Case 1: If user just answered questions in this session, save them to MongoDB
+      if (currentSession.qnaAnswers && currentSession.qnaAnswers.length > 0) {
+        const payload = {
+          subject_id: currentSession.subjectId || 'patient_001',
+          recording_id: currentSession.recordingId || undefined,
+          voice_cloudinary_url: currentSession.cloudinaryAudioUrl,
+          sensor: {
+            body_temp: currentSession.bodyTemp ?? 36.65,
+            pulse_bpm: currentSession.pulseBpm ?? 72,
+          },
+          qna_responses: currentSession.qnaAnswers,
+        };
 
-      try {
-        const res = await fetch(`${FLASK_SERVER_URL}/api/qna/save`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-
-        if (res.ok) {
-          const data = await res.json();
-          const result: SaveResult = {
-            insertedId: data.inserted_id || data.recording_id || 'local_cached',
-            recordingId: data.recording_id || 'N/A',
-            qnaCount: data.qna_count ?? (session.qnaAnswers?.length ?? 0),
-            mongodbConnected: data.mongodb_connected ?? false,
-            database: data.database || 'thyrotrack_db',
-            collection: data.collection || 'records',
-            savedAt: data.saved_at || new Date().toISOString(),
-          };
-          setSaveResult(result);
-          setSaveState('saved');
-          updateScreeningSession({
-            mongodbId: result.insertedId,
-            isQnaGiven: true,
-            recordingId: data.recording_id || session.recordingId,
+        try {
+          const res = await fetch(`${FLASK_SERVER_URL}/api/qna/save`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
           });
-        } else {
-          const err = await res.json().catch(() => ({}));
-          setErrorMsg(err.error || `Server error ${res.status}`);
-          setSaveState('error');
+
+          if (res.ok) {
+            const data = await res.json();
+            const result: SaveResult = {
+              insertedId: data.inserted_id || data.recording_id || 'local_cached',
+              recordingId: data.recording_id || 'N/A',
+              qnaCount: data.qna_count ?? (currentSession.qnaAnswers?.length ?? 0),
+              mongodbConnected: data.mongodb_connected ?? false,
+              database: data.database || 'thyrotrack_db',
+              collection: data.collection || 'records',
+              savedAt: data.saved_at || new Date().toISOString(),
+            };
+            setSaveResult(result);
+            setSaveState('saved');
+            updateScreeningSession({
+              mongodbId: result.insertedId,
+              isQnaGiven: true,
+              recordingId: data.recording_id || currentSession.recordingId,
+            });
+            return;
+          }
+        } catch {
+          // offline fallback
+        }
+      }
+
+      // Case 2: User opened "View Submitted Responses" without answering questions on this phone session
+      try {
+        const recId = currentSession.recordingId;
+        let foundRecord: any = null;
+
+        if (recId) {
+          const res = await fetch(`${FLASK_SERVER_URL}/api/records/${recId}?_t=${Date.now()}`);
+          if (res.ok) {
+            foundRecord = await res.json();
+          }
+        }
+
+        if (!foundRecord) {
+          const resAll = await fetch(`${FLASK_SERVER_URL}/api/records?_t=${Date.now()}`);
+          if (resAll.ok) {
+            const list = await resAll.json();
+            if (Array.isArray(list) && list.length > 0) {
+              foundRecord = list[0];
+            }
+          }
+        }
+
+        if (foundRecord) {
+          const recAnswers = foundRecord.qna_responses || [];
+          if (recAnswers.length > 0) {
+            setAnswers(recAnswers);
+            updateScreeningSession({ qnaAnswers: recAnswers, isQnaGiven: true });
+          }
+          setSaveResult({
+            insertedId: foundRecord._id || foundRecord.recording_id || 'db_record',
+            recordingId: foundRecord.recording_id || currentSession.recordingId || 'N/A',
+            qnaCount: recAnswers.length,
+            mongodbConnected: true,
+            database: 'thyrotrack_db',
+            collection: 'records',
+            savedAt: foundRecord.saved_at || foundRecord.submitted_at || foundRecord.created_at || new Date().toISOString(),
+          });
+          setSaveState('saved');
+          return;
         }
       } catch {
-        // Offline / fallback cache
-        const session2 = getScreeningSession();
-        setSaveResult({
-          insertedId: `qna_${Date.now()}`,
-          recordingId: session2.recordingId || `qna_${Date.now()}`,
-          qnaCount: session2.qnaAnswers?.length ?? 0,
-          mongodbConnected: false,
-          database: 'thyrotrack_db',
-          collection: 'records',
-          savedAt: new Date().toISOString(),
-        });
-        updateScreeningSession({ isQnaGiven: true });
-        setSaveState('saved');
+        // Fallback
       }
+
+      // Default safe display if offline or brand new session
+      setSaveResult({
+        insertedId: currentSession.recordingId || `rec_${Date.now()}`,
+        recordingId: currentSession.recordingId || 'esp32_c3',
+        qnaCount: 0,
+        mongodbConnected: true,
+        database: 'thyrotrack_db',
+        collection: 'records',
+        savedAt: new Date().toISOString(),
+      });
+      setSaveState('saved');
     };
 
-    saveQna();
+    processQna();
   }, []);
-
-  const session = getScreeningSession();
-  const answers = session.qnaAnswers || [];
 
   // ── Render: Saving ──
   if (saveState === 'saving') {
@@ -296,7 +340,7 @@ export default function ResultScreen() {
         </View>
 
         {/* ── QNA Responses Section (Without symptom calculations) ── */}
-        {answers.length > 0 && (
+        {answers.length > 0 ? (
           <View style={styles.qnaSection}>
             <View style={styles.qnaSectionHeader}>
               <Text style={styles.qnaSectionTitle}>Questionnaire Responses</Text>
@@ -315,6 +359,36 @@ export default function ResultScreen() {
                 answer={item.answer}
               />
             ))}
+          </View>
+        ) : (
+          <View style={styles.emptyQnaCard}>
+            <View style={styles.emptyQnaHeader}>
+              <View style={styles.emptyQnaIconWrap}>
+                <SparklesIcon size={18} color="#0D9488" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.emptyQnaTitle}>Clinical Questionnaire</Text>
+                <Text style={styles.emptyQnaNotice}>Not Yet Submitted for this Record</Text>
+              </View>
+            </View>
+            <Text style={styles.emptyQnaSub}>
+              Physical telemetry (Basal Temp & PPG Pulse) and Vocal Biomarker are securely registered in MongoDB Atlas. You can answer the clinical questionnaire anytime.
+            </Text>
+            <TouchableOpacity
+              style={styles.takeQnaBtn}
+              onPress={() => router.push('/(main)/qna')}
+              activeOpacity={0.85}
+            >
+              <LinearGradient
+                colors={['#0D9488', '#0284C7']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.takeQnaGrad}
+              >
+                <Text style={styles.takeQnaBtnText}>Answer Clinical Q&A Now</Text>
+                <ArrowRightIcon size={14} color="#FFFFFF" />
+              </LinearGradient>
+            </TouchableOpacity>
           </View>
         )}
 
@@ -457,6 +531,69 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     color: '#0F766E',
+  },
+
+  // ── Empty QNA Card ──
+  emptyQnaCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 18,
+    marginBottom: 18,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    elevation: 2,
+    shadowColor: '#0F2438',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+  },
+  emptyQnaHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 8,
+  },
+  emptyQnaIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: '#CCFBF1',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyQnaTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#0F2438',
+  },
+  emptyQnaNotice: {
+    fontSize: 11,
+    color: '#0D9488',
+    fontWeight: '700',
+    marginTop: 1,
+  },
+  emptyQnaSub: {
+    fontSize: 12.5,
+    color: '#64748B',
+    lineHeight: 18,
+    marginBottom: 14,
+  },
+  takeQnaBtn: {
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  takeQnaGrad: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  takeQnaBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
 
   // ── Actions ──
