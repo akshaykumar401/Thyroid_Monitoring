@@ -1,0 +1,11 @@
+{
+  "device_id": "esp32-c3",
+  "duration_seconds": 30.0,
+  "average_bpm": 138.31,
+  "bpm_samples": 19.0,
+  "average_temperature_c": 26.18,
+  "maximum_temperature_c": 26.19,
+  "received_at": "2026-10-12T19:18:25",
+  "recording_id": "esp32_c8df950b",
+  "subject_id": "subject_001"
+}

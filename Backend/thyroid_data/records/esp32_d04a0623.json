@@ -1,0 +1,30 @@
+{
+  "recording_id": "esp32_d04a0623",
+  "created_at": "2026-10-14T16:50:08",
+  "subject_id": "subject_001",
+  "audio": {
+    "file": "audio_20261014_164941_esp32_d04a0623.wav",
+    "duration_seconds": 5.712,
+    "chunks": 12,
+    "pcm_bytes": 182784,
+    "sample_rate": 16000,
+    "dropped_samples": 0,
+    "mic_loss_percent": 0.0,
+    "quality": {
+      "rms": 1000.9,
+      "peak": 7879,
+      "dc_offset": -5.1,
+      "clipped_samples": 0,
+      "hard_jumps": 0
+    },
+    "warnings": [],
+    "cloudinary": {
+      "status": "uploaded",
+      "cloudinary_url": "https://res.cloudinary.com/dh7degaxv/video/upload/v1791976807/thyrotrack_voice/thyrotrack_voice/subject_001_audio_20261014_164941_esp32_d04a0623.wav",
+      "public_id": "thyrotrack_voice/thyrotrack_voice/subject_001_audio_20261014_164941_esp32_d04a0623",
+      "format": "wav",
+      "duration": 5.712,
+      "filename": "audio_20261014_164941_esp32_d04a0623.wav"
+    }
+  }
+}
