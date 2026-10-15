@@ -139,20 +139,10 @@ export default function ResultScreen() {
           }
         }
 
-        if (!foundRecord) {
-          const resAll = await fetch(`${FLASK_SERVER_URL}/api/records?_t=${Date.now()}`);
-          if (resAll.ok) {
-            const list = await resAll.json();
-            if (Array.isArray(list) && list.length > 0) {
-              foundRecord = list[0];
-            }
-          }
-        }
-
         if (foundRecord) {
           const recAnswers = foundRecord.qna_responses || [];
+          setAnswers(recAnswers);
           if (recAnswers.length > 0) {
-            setAnswers(recAnswers);
             updateScreeningSession({ qnaAnswers: recAnswers, isQnaGiven: true });
           }
           setSaveResult({

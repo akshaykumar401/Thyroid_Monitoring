@@ -61,7 +61,7 @@ let activeSession: ScreeningSession = {
   subjectId: 'patient_001',
   bodyTemp: 0,
   pulseBpm: 0,
-  recordingId: 'esp32_60a90110',
+  recordingId: 'esp32_d1bfa4e5',
   cloudinaryAudioUrl: DEFAULT_CLOUDINARY_VOICE_URL,
   qnaAnswers: [],
   isQnaGiven: false,

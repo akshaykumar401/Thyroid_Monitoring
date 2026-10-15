@@ -88,6 +88,10 @@ export default function DashboardScreen() {
           setBodyTemp(tempVal);
         }
         if (d.recording_id) {
+          if (recordingIdRef.current && d.recording_id !== recordingIdRef.current) {
+            setIsQnaGiven(false);
+            updateScreeningSession({ qnaAnswers: [], isQnaGiven: false });
+          }
           setVoiceRecordingId(d.recording_id);
           recordingIdRef.current = d.recording_id;
         }
@@ -115,6 +119,10 @@ export default function DashboardScreen() {
           setVoiceUrl(d.cloudinary_url);
           if (d.filename) setVoiceLabel(d.filename);
           if (d.recording_id) {
+            if (recordingIdRef.current && d.recording_id !== recordingIdRef.current) {
+              setIsQnaGiven(false);
+              updateScreeningSession({ qnaAnswers: [], isQnaGiven: false });
+            }
             setVoiceRecordingId(d.recording_id);
             recordingIdRef.current = d.recording_id;
           }
@@ -142,7 +150,11 @@ export default function DashboardScreen() {
       if (res.ok) {
         const d = await res.json();
         const currentSession = getScreeningSession();
-        const hasLocalAnswers = Boolean(currentSession.qnaAnswers && currentSession.qnaAnswers.length > 0);
+        const hasLocalAnswers = Boolean(
+          (!currentSession.recordingId || currentSession.recordingId === recId) &&
+          currentSession.qnaAnswers &&
+          currentSession.qnaAnswers.length > 0
+        );
         if (d.is_qna_given || hasLocalAnswers) {
           setIsQnaGiven(true);
           updateScreeningSession({ isQnaGiven: true });
