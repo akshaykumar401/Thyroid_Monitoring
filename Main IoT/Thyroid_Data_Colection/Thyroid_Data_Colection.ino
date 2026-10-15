@@ -93,8 +93,8 @@ const char* SUBJECT_ID = "subject_001";
 #define I2S_DMA_COUNT 16                    // 16 x 384 samples = 384 ms of hardware buffer
 #define I2S_DMA_LEN 384
 
-#define RING_BYTES 65536                    // 2 seconds of audio
-#define UPLOAD_CHUNK_BYTES 16384            // 8192 samples = 0.512 s per HTTP request
+#define RING_BYTES 49152                    // 1.5 seconds of audio buffer (optimized for ESP32-C3 SRAM)
+#define UPLOAD_CHUNK_BYTES 8192             // 4096 samples = 0.256 s per HTTP chunk (low-latency HTTPS)
 #define UPLOAD_RETRIES 3
 
 // =====================================================
@@ -362,12 +362,12 @@ bool connectWiFi() {
 // 8. HTTP HELPERS
 // =====================================================
 
-bool postJson(const String& url, const String& json) {
+bool postJson(const String& url, const String& json, uint32_t timeoutMs = 15000) {
   if (!connectWiFi()) return false;
 
   HTTPClient http;
   http.setConnectTimeout(8000);
-  http.setTimeout(15000);
+  http.setTimeout(timeoutMs);
 
   bool beginOk = false;
   WiFiClientSecure secureClient;
@@ -404,11 +404,11 @@ bool startServerRecording() {
                 "\",\"subject_id\":\"" + String(SUBJECT_ID) + "\"}";
 
   Serial.println("Starting server audio session: " + body);
-  return postJson(String(SERVER) + "/api/audio/start", body);
+  return postJson(String(SERVER) + "/api/audio/start", body, 15000);
 }
 
 void cancelServerRecording() {
-  postJson(String(SERVER) + "/api/audio/cancel/" + recordingId, "{}");
+  postJson(String(SERVER) + "/api/audio/cancel/" + recordingId, "{}", 8000);
 }
 
 bool finishServerRecording() {
@@ -419,7 +419,9 @@ bool finishServerRecording() {
            (unsigned)droppedSamples,
            (unsigned)((uint64_t)capturedSamples * 1000ULL / SAMPLE_RATE),
            (unsigned)captureWallMs);
-  return postJson(String(SERVER) + "/api/audio/finish/" + recordingId, String(body));
+  Serial.printf("Finalizing recording %s on server...\n", recordingId.c_str());
+  // 25s timeout for Cloudinary upload processing on Vercel
+  return postJson(String(SERVER) + "/api/audio/finish/" + recordingId, String(body), 25000);
 }
 
 // Sends one block of PCM. Retries when the answer did not arrive.
@@ -701,7 +703,7 @@ bool startRecording() {
   appState = RECORDING;
   hasCompletedScreening = false;
 
-  if (xTaskCreate(uploadAudioTask, "AudioUpload", 10240, nullptr, 3, &uploadTaskHandle) != pdPASS) {
+  if (xTaskCreate(uploadAudioTask, "AudioUpload", 14336, nullptr, 3, &uploadTaskHandle) != pdPASS) {
     Serial.println("Could not start upload task");
     vStreamBufferDelete(ring);
     ring = nullptr;

@@ -6,6 +6,7 @@ No local file writes to codebase.
 """
 
 import os
+import time
 import logging
 import threading
 from datetime import datetime
@@ -229,6 +230,7 @@ def save_sensor_reading_to_mongodb(sensor_data: dict) -> dict:
     record = dict(sensor_data)
     if "received_at" not in record:
         record["received_at"] = datetime.now().isoformat(timespec="seconds")
+    record["epoch"] = time.time()
 
     collection = get_mongo_collection(collection_name=SENSOR_COLLECTION)
     if collection is not None:
@@ -268,7 +270,7 @@ def get_sensor_history_from_mongodb(limit: int = 100) -> list:
     collection = get_mongo_collection(collection_name=SENSOR_COLLECTION)
     if collection is not None:
         try:
-            records = list(collection.find({}, {"_id": 0}).sort("received_at", -1).limit(limit))
+            records = list(collection.find({}, {"_id": 0}).sort([("epoch", -1), ("_id", -1)]).limit(limit))
             return list(reversed(records))
         except Exception as e:
             logger.error(f"MongoDB sensor history fetch error: {e}")
@@ -282,7 +284,7 @@ def get_latest_sensor_reading_from_mongodb() -> dict | None:
     collection = get_mongo_collection(collection_name=SENSOR_COLLECTION)
     if collection is not None:
         try:
-            return collection.find_one({}, {"_id": 0}, sort=[("received_at", -1)])
+            return collection.find_one({}, {"_id": 0}, sort=[("epoch", -1), ("_id", -1)])
         except Exception as e:
             logger.error(f"MongoDB latest sensor fetch error: {e}")
     return None
@@ -300,6 +302,7 @@ def save_record_to_mongodb(record_data: dict) -> dict:
     """
     record = dict(record_data)
     record["saved_at"] = datetime.now().isoformat(timespec="seconds")
+    record["epoch"] = time.time()
     recording_id = record.get("recording_id")
 
     collection = get_mongo_collection(collection_name=RECORDS_COLLECTION)
@@ -352,6 +355,8 @@ def update_record_in_mongodb(recording_id: str, **sections) -> dict:
         else:
             existing[key] = value
 
+    existing["epoch"] = time.time()
+
     if collection is not None:
         try:
             update_data = {k: v for k, v in existing.items() if k != "_id"}
@@ -386,7 +391,7 @@ def get_all_records_from_mongodb(limit: int = 100) -> list:
     collection = get_mongo_collection(collection_name=RECORDS_COLLECTION)
     if collection is not None:
         try:
-            return list(collection.find({}, {"_id": 0}).sort("created_at", -1).limit(limit))
+            return list(collection.find({}, {"_id": 0}).sort([("epoch", -1), ("_id", -1)]).limit(limit))
         except Exception as e:
             logger.error(f"MongoDB fetch records error: {e}")
     return []
@@ -407,7 +412,7 @@ def get_latest_voice_record_from_mongodb() -> dict | None:
                     ]
                 },
                 {"_id": 0},
-                sort=[("created_at", -1), ("saved_at", -1)],
+                sort=[("epoch", -1), ("_id", -1)],
             )
             return rec
         except Exception as e:
