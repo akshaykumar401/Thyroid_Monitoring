@@ -26,6 +26,7 @@
 */
 
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <esp_wifi.h>
 #include <HTTPClient.h>
 #include <Wire.h>
@@ -47,7 +48,7 @@ const char* WIFI_SSID     = "Hanuman ";
 const char* WIFI_PASSWORD = "ak12344321kr";
 
 // Constant Flask server URL
-const char* SERVER = "http://192.168.0.105:5000";
+const char* SERVER = "https://thyroid-monitoring.vercel.app";
 
 const char* DEVICE_ID  = "esp32-c3";
 const char* SUBJECT_ID = "subject_001";
@@ -365,10 +366,19 @@ bool postJson(const String& url, const String& json) {
   if (!connectWiFi()) return false;
 
   HTTPClient http;
-  http.setConnectTimeout(5000);
-  http.setTimeout(10000);
+  http.setConnectTimeout(8000);
+  http.setTimeout(15000);
 
-  if (!http.begin(url)) {
+  bool beginOk = false;
+  WiFiClientSecure secureClient;
+  if (url.startsWith("https://")) {
+    secureClient.setInsecure();
+    beginOk = http.begin(secureClient, url);
+  } else {
+    beginOk = http.begin(url);
+  }
+
+  if (!beginOk) {
     Serial.println("HTTP begin failed");
     return false;
   }
@@ -423,10 +433,19 @@ bool uploadChunk(const uint8_t* data, size_t bytes) {
 
     if (connectWiFi()) {
       HTTPClient http;
-      http.setConnectTimeout(3000);
-      http.setTimeout(8000);
+      http.setConnectTimeout(5000);
+      http.setTimeout(12000);
 
-      if (http.begin(url)) {
+      bool beginOk = false;
+      WiFiClientSecure secureClient;
+      if (url.startsWith("https://")) {
+        secureClient.setInsecure();
+        beginOk = http.begin(secureClient, url);
+      } else {
+        beginOk = http.begin(url);
+      }
+
+      if (beginOk) {
         http.addHeader("Content-Type", "application/octet-stream");
         http.addHeader("X-Dropped-Samples", String((unsigned long)droppedSamples));
         code = http.POST((uint8_t*)data, bytes);

@@ -1,19 +1,18 @@
 """
-ThyroTrack - High-Performance Flask Backend (Optimized)
+ThyroTrack - High-Performance Flask Backend (Serverless & Local Compatible)
 Receives ESP32-C3 telemetry, sensor batches, audio phonation streaming, and mobile app evaluations.
 
 Key Architectural Optimizations:
-- Zero local file storage: No data, records, or history saved in code files or repository.
-- In-memory stream buffering for active ESP32 audio chunks (eliminates disk I/O bottlenecks).
+- 100% Serverless & Vercel compatible: Distributed audio sessions stored in MongoDB Atlas across lambda invocations.
+- Zero local disk storage: No data, records, or history saved in code files or repository.
 - Direct Cloudinary streaming for voice phonation audio.
 - Persistent singleton connection pooling with MongoDB Atlas for records and sensor telemetry.
-- On-the-fly CSV dataset generation and fast indexed queries.
+- Root and API health endpoints.
 """
 
 import csv
 import io
 import re
-import threading
 import time
 import wave
 from datetime import datetime
@@ -36,6 +35,10 @@ from mongodb_service import (
     get_sensor_history_from_mongodb,
     get_latest_sensor_reading_from_mongodb,
     get_latest_voice_record_from_mongodb,
+    create_audio_session,
+    append_audio_chunk,
+    finish_audio_session,
+    cancel_audio_session,
 )
 
 try:
@@ -58,13 +61,6 @@ BYTES_PER_SECOND = SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH_BYTES
 MAX_AUDIO_SECONDS = 32
 MAX_AUDIO_BYTES = BYTES_PER_SECOND * MAX_AUDIO_SECONDS
 MAX_CHUNK_BYTES = 64 * 1024
-STALE_RECORDING_TIMEOUT_SECONDS = 600  # 10 minutes timeout for in-memory incomplete sessions
-
-# Thread-safe in-memory state (Zero disk writes during streaming)
-_state_lock = threading.RLock()
-_active_recordings: dict[str, dict] = {}
-_latest_sensor_data: dict | None = None
-_latest_voice_info: dict | None = None
 
 
 # ------------------------------------------------------------------
@@ -92,18 +88,6 @@ def to_number(value, name, low=None, high=None, allow_none=True):
     if high is not None and number > high:
         raise ValueError(f"{name} must be <= {high}")
     return number
-
-
-def cleanup_stale_recordings():
-    """Removes abandoned in-memory audio recording sessions older than timeout."""
-    now = time.time()
-    with _state_lock:
-        stale_keys = [
-            k for k, v in _active_recordings.items()
-            if now - v.get("started_time", now) > STALE_RECORDING_TIMEOUT_SECONDS
-        ]
-        for k in stale_keys:
-            _active_recordings.pop(k, None)
 
 
 def audio_quality_from_buffer(pcm_bytes: bytes) -> dict:
@@ -141,6 +125,29 @@ def add_cors_headers(response):
     return response
 
 
+@app.route("/", methods=["GET", "OPTIONS"])
+def root():
+    if request.method == "OPTIONS":
+        return "", 200
+    return jsonify({
+        "status": "online",
+        "service": "ThyroTrack Backend",
+        "deployed_on": "Vercel Serverless / Cloud",
+        "database": "MongoDB Atlas",
+        "voice_storage": "Cloudinary",
+        "endpoints": {
+            "health": "/api/health",
+            "config": "/api/config",
+            "sensor_latest": "/api/sensor/latest",
+            "sensor_history": "/api/sensor/history",
+            "audio_latest": "/api/audio/latest-info",
+            "records": "/api/records",
+            "qna_status": "/api/qna/status",
+        },
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }), 200
+
+
 @app.route("/api/health", methods=["GET", "OPTIONS"])
 def health():
     if request.method == "OPTIONS":
@@ -172,7 +179,7 @@ def device_config():
 
 
 # ------------------------------------------------------------------
-# Audio Streaming (100% In-Memory Buffering — Zero Disk Writes)
+# Audio Streaming (Serverless Distributed Session — Zero Disk Writes)
 # ------------------------------------------------------------------
 @app.post("/api/audio/start")
 def audio_start():
@@ -185,26 +192,10 @@ def audio_start():
     if subject_id is not None and not safe_id(subject_id):
         return jsonify({"error": "Invalid subject_id"}), 400
 
-    cleanup_stale_recordings()
-
-    with _state_lock:
-        if recording_id in _active_recordings:
-            return jsonify({
-                "error": "Recording ID already in progress",
-                "recording_id": recording_id,
-            }), 409
-
-        _active_recordings[recording_id] = {
-            "recording_id": recording_id,
-            "subject_id": subject_id or "subject_001",
-            "next_chunk": 0,
-            "bytes_received": 0,
-            "last_chunk_bytes": 0,
-            "dropped_samples": 0,
-            "pcm_buffer": bytearray(),
-            "started_time": time.time(),
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-        }
+    # Create session in MongoDB (accessible across all serverless lambda instances)
+    success = create_audio_session(recording_id, subject_id=subject_id or "subject_001")
+    if not success:
+        return jsonify({"error": "Failed to create audio session"}), 500
 
     return jsonify({
         "status": "recording_started",
@@ -231,65 +222,59 @@ def audio_chunk(recording_id, chunk_index):
     dropped_header = request.headers.get("X-Dropped-Samples", "0")
     dropped = int(dropped_header) if dropped_header.isdigit() else 0
 
-    with _state_lock:
-        session = _active_recordings.get(recording_id)
-        if not session:
-            return jsonify({"error": "Recording session not found or expired"}), 404
+    # Append to distributed MongoDB session (works across any Vercel Lambda container)
+    res = append_audio_chunk(recording_id, chunk_index, pcm, dropped=dropped)
+    status = res.get("status")
 
-        expected = int(session["next_chunk"])
+    if status == "duplicate_ignored":
+        return jsonify({
+            "status": "duplicate_ignored",
+            "chunk_index": chunk_index,
+            "total_bytes": res.get("total_bytes", 0),
+        }), 200
 
-        # ESP32 retry handling: If already appended, return OK without re-appending
-        if chunk_index == expected - 1 and len(pcm) == session["last_chunk_bytes"]:
-            return jsonify({
-                "status": "duplicate_ignored",
-                "chunk_index": chunk_index,
-                "total_bytes": session["bytes_received"],
-            }), 200
+    if status == "not_found":
+        return jsonify({"error": "Recording session not found or expired"}), 404
 
-        if chunk_index != expected:
-            return jsonify({
-                "error": "Unexpected chunk index",
-                "expected_chunk": expected,
-                "received_chunk": chunk_index,
-            }), 409
+    if status == "mismatch":
+        return jsonify({
+            "error": "Unexpected chunk index",
+            "expected_chunk": res.get("expected"),
+            "received_chunk": res.get("received"),
+        }), 409
 
-        new_total = session["bytes_received"] + len(pcm)
-        if new_total > MAX_AUDIO_BYTES:
-            return jsonify({"error": f"Audio exceeds {MAX_AUDIO_SECONDS}-second limit"}), 413
+    if status == "error":
+        return jsonify({"error": res.get("error")}), 500
 
-        # In-memory buffer append (sub-millisecond latency, no file writes)
-        session["pcm_buffer"].extend(pcm)
-        session["bytes_received"] = new_total
-        session["next_chunk"] = expected + 1
-        session["last_chunk_bytes"] = len(pcm)
-        session["dropped_samples"] = max(session["dropped_samples"], dropped)
+    total_bytes = res.get("total_bytes", len(pcm))
+    if total_bytes > MAX_AUDIO_BYTES:
+        return jsonify({"error": f"Audio exceeds {MAX_AUDIO_SECONDS}-second limit"}), 413
 
     return jsonify({
         "status": "chunk_received",
         "chunk_index": chunk_index,
         "chunk_bytes": len(pcm),
-        "total_bytes": new_total,
-        "seconds": round(new_total / BYTES_PER_SECOND, 3),
+        "total_bytes": total_bytes,
+        "seconds": round(total_bytes / BYTES_PER_SECOND, 3),
     }), 200
 
 
 @app.post("/api/audio/finish/<recording_id>")
 def audio_finish(recording_id):
-    global _latest_voice_info
     info = request.get_json(silent=True) or {}
     recording_id = safe_id(recording_id)
     if not recording_id:
         return jsonify({"error": "Invalid recording ID"}), 400
 
-    with _state_lock:
-        session = _active_recordings.pop(recording_id, None)
-
+    # Retrieve all chunks from distributed MongoDB session and delete temp session
+    session = finish_audio_session(recording_id)
     if not session:
         return jsonify({"error": "Recording session not found"}), 404
 
-    pcm_bytes = bytes(session["pcm_buffer"])
+    chunks = session.get("chunks", [])
+    pcm_bytes = b"".join([bytes(c) for c in chunks])
     total_bytes = len(pcm_bytes)
-    total_chunks = session["next_chunk"]
+    total_chunks = session.get("next_chunk", len(chunks))
 
     if total_bytes == 0 or total_chunks == 0:
         return jsonify({"error": "No audio samples were received"}), 400
@@ -322,7 +307,7 @@ def audio_finish(recording_id):
     wav_name = f"audio_{stamp}_{recording_id}.wav"
     subject_id = info.get("subject_id") or session.get("subject_id") or "subject_001"
 
-    # Encode WAV entirely in-memory using BytesIO (no local file on disk)
+    # Encode WAV in memory using BytesIO
     wav_io = io.BytesIO()
     with wave.open(wav_io, "wb") as wav:
         wav.setnchannels(CHANNELS)
@@ -347,29 +332,14 @@ def audio_finish(recording_id):
         "cloudinary": cld_info,
     }
 
-    # Cache latest voice info in memory for instant mobile app queries
-    latest_voice_payload = {
-        "status": "ready",
-        "cloudinary_url": cld_info.get("cloudinary_url"),
-        "recording_id": recording_id,
-        "filename": wav_name,
-        "duration_seconds": round(duration, 2),
-        "received_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    with _state_lock:
-        _latest_voice_info = latest_voice_payload
-
-    # Save/Update directly in MongoDB Atlas
-    updated_record = update_record_in_mongodb(
+    # Save complete record in MongoDB Atlas
+    update_record_in_mongodb(
         recording_id,
         subject_id=subject_id,
         audio=audio_info,
         voice_cloudinary_url=cld_info.get("cloudinary_url"),
         created_at=session.get("created_at"),
     )
-
-    print(f"\n[Voice Uploaded] Recording '{recording_id}' -> Cloudinary: {cld_info.get('cloudinary_url')}")
-    print(f"[DB Synced] Saved directly to MongoDB 'records' collection. Zero files saved locally.\n")
 
     return jsonify({"status": "wav_created", "recording_id": recording_id, **audio_info}), 200
 
@@ -380,14 +350,12 @@ def audio_cancel(recording_id):
     recording_id = safe_id(recording_id)
     if not recording_id:
         return jsonify({"error": "Invalid recording ID"}), 400
-    with _state_lock:
-        _active_recordings.pop(recording_id, None)
+    cancel_audio_session(recording_id)
     return jsonify({"status": "cancelled", "recording_id": recording_id}), 200
 
 
 @app.get("/api/audio/sample")
 def audio_sample():
-    # Return playable Cloudinary sample URL redirect
     sample_url = "https://res.cloudinary.com/dh7degaxv/video/upload/v1791803233/thyrotrack_voice/thyrotrack_voice/patient_001_sample_vocal.wav"
     return redirect(sample_url, code=302)
 
@@ -402,17 +370,11 @@ def audio_latest():
 
 
 def audio_latest_info_internal() -> dict:
-    global _latest_voice_info
-    with _state_lock:
-        if _latest_voice_info:
-            return _latest_voice_info
-
-    # Query MongoDB Atlas for most recent record containing a voice URL
     latest_rec = get_latest_voice_record_from_mongodb()
     if latest_rec:
         cld = (latest_rec.get("audio") or {}).get("cloudinary", {}).get("cloudinary_url") or latest_rec.get("voice_cloudinary_url")
         if cld:
-            payload = {
+            return {
                 "status": "ready",
                 "cloudinary_url": cld,
                 "recording_id": latest_rec.get("recording_id"),
@@ -420,11 +382,8 @@ def audio_latest_info_internal() -> dict:
                 "duration_seconds": (latest_rec.get("audio") or {}).get("duration_seconds", 4.0),
                 "received_at": latest_rec.get("created_at") or latest_rec.get("saved_at"),
             }
-            with _state_lock:
-                _latest_voice_info = payload
-            return payload
 
-    fallback = {
+    return {
         "status": "ready",
         "cloudinary_url": "https://res.cloudinary.com/dh7degaxv/video/upload/v1791804202/thyrotrack_voice/thyrotrack_voice/subject_001_audio_20261012_165321_esp32_d0ab6076.wav",
         "recording_id": "esp32_d0ab6076",
@@ -432,7 +391,6 @@ def audio_latest_info_internal() -> dict:
         "duration_seconds": 7.97,
         "received_at": datetime.now().isoformat(),
     }
-    return fallback
 
 
 @app.get("/api/audio/latest-info")
@@ -445,7 +403,6 @@ def audio_latest_info():
 # ------------------------------------------------------------------
 @app.post("/api/sensor-batch")
 def sensor_batch():
-    global _latest_sensor_data
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({"error": "Expected JSON body"}), 400
@@ -471,28 +428,18 @@ def sensor_batch():
     summary["recording_id"] = recording_id
     summary["subject_id"] = subject_id
 
-    # 1. Update in-memory latest state
-    with _state_lock:
-        _latest_sensor_data = summary
-
-    # 2. Save directly to MongoDB sensor_readings collection
+    # Save directly to MongoDB sensor_readings collection
     save_sensor_reading_to_mongodb(summary)
 
-    # 3. If tied to a recording_id, merge into MongoDB records collection
+    # If tied to a recording_id, merge into MongoDB records collection
     if recording_id:
         update_record_in_mongodb(recording_id, subject_id=subject_id, sensor=summary)
-
-    print(f"[Sensor Telemetry] BPM: {summary['average_bpm']} | Temp: {summary['average_temperature_c']}°C -> Saved to MongoDB")
 
     return jsonify({"status": "sensor_data_received", "recording_id": recording_id, "data": summary}), 200
 
 
 @app.get("/api/sensor/latest")
 def sensor_latest():
-    with _state_lock:
-        if _latest_sensor_data:
-            return jsonify(_latest_sensor_data), 200
-
     reading = get_latest_sensor_reading_from_mongodb()
     if reading:
         return jsonify(reading), 200
@@ -508,7 +455,6 @@ def sensor_latest():
 
 @app.get("/api/sensor/history")
 def sensor_history():
-    """Returns sensor telemetry history directly from MongoDB sensor_readings."""
     history = get_sensor_history_from_mongodb(limit=100)
     return jsonify(history), 200
 
@@ -562,7 +508,6 @@ def get_record(recording_id):
 
 @app.get("/api/dataset.csv")
 def dataset_csv():
-    """Generates an ML-ready CSV directly from MongoDB Atlas records in-memory."""
     columns = [
         "recording_id", "subject_id", "audio_file", "duration_s", "dropped_samples",
         "mic_loss_percent", "audio_rms", "audio_peak", "hard_jumps",
@@ -608,8 +553,7 @@ def save_assessment():
         cld_link = "https://res.cloudinary.com/dh7degaxv/video/upload/v1791803233/thyrotrack_voice/thyrotrack_voice/patient_001_sample_vocal.wav"
 
     sensor_data = data.get("sensor") or {}
-    with _state_lock:
-        latest_sensor = _latest_sensor_data or get_latest_sensor_reading_from_mongodb() or {}
+    latest_sensor = get_latest_sensor_reading_from_mongodb() or {}
 
     if latest_sensor:
         current_temp = sensor_data.get("body_temp") or data.get("body_temp") or latest_sensor.get("average_temperature_c", 36.65)
@@ -660,9 +604,7 @@ def save_qna():
 
     is_qna_given = len(qna_responses) > 0
 
-    with _state_lock:
-        latest_sensor = _latest_sensor_data or get_latest_sensor_reading_from_mongodb() or {}
-
+    latest_sensor = get_latest_sensor_reading_from_mongodb() or {}
     if latest_sensor and not sensor_data:
         sensor_data = {
             "body_temp": latest_sensor.get("average_temperature_c", 36.65),
@@ -738,9 +680,9 @@ def list_assessments():
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("ThyroTrack Flask Server (High Performance & Zero Local Storage)")
+    print("ThyroTrack Flask Server (Serverless & Local Ready)")
     print("Health Test : http://127.0.0.1:5000/api/health")
-    print("Database    : MongoDB Atlas (records + sensor_readings)")
+    print("Database    : MongoDB Atlas (records + sensor_readings + audio_sessions)")
     print("Voice Cloud : Cloudinary Direct Stream")
     print("=" * 60)
     app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)

@@ -1,7 +1,7 @@
 """
-ThyroTrack MongoDB Storage Service (Optimized)
+ThyroTrack MongoDB Storage Service (Optimized for Serverless & Vercel)
 High-performance singleton connection pooling for patient screenings,
-sensor telemetry, Q&A results, and Cloudinary voice links.
+sensor telemetry, Q&A results, Cloudinary voice links, and distributed audio chunk sessions.
 No local file writes to codebase.
 """
 
@@ -21,6 +21,7 @@ MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017/")
 DB_NAME = os.getenv("MONGODB_DB_NAME", "thyrotrack_db")
 RECORDS_COLLECTION = "records"
 SENSOR_COLLECTION = "sensor_readings"
+AUDIO_SESSIONS_COLLECTION = "audio_sessions"
 
 _client = None
 _client_lock = threading.Lock()
@@ -45,9 +46,9 @@ def get_mongo_client():
                     maxPoolSize=50,
                     minPoolSize=5,
                     maxIdleTimeMS=30000,
-                    serverSelectionTimeoutMS=4000,
-                    connectTimeoutMS=4000,
-                    socketTimeoutMS=5000,
+                    serverSelectionTimeoutMS=5000,
+                    connectTimeoutMS=5000,
+                    socketTimeoutMS=7000,
                 )
                 logger.info("Connected to MongoDB with connection pooling.")
             except Exception as e:
@@ -76,6 +77,9 @@ def get_mongo_collection(collection_name: str = RECORDS_COLLECTION):
                 db[RECORDS_COLLECTION].create_index([("created_at", -1)])
                 db[SENSOR_COLLECTION].create_index([("received_at", -1)])
                 db[SENSOR_COLLECTION].create_index("recording_id", sparse=True)
+                # TTL index to auto-delete incomplete audio sessions after 30 minutes
+                db[AUDIO_SESSIONS_COLLECTION].create_index("updated_at", expireAfterSeconds=1800)
+                db[AUDIO_SESSIONS_COLLECTION].create_index("recording_id", unique=True)
                 _indices_created = True
             except Exception as idx_err:
                 logger.debug(f"Index creation note: {idx_err}")
@@ -87,6 +91,136 @@ def get_mongo_collection(collection_name: str = RECORDS_COLLECTION):
         return None
 
 
+# ------------------------------------------------------------------
+# Distributed Audio Session Streaming (Enables Vercel Serverless Audio Streaming)
+# ------------------------------------------------------------------
+def create_audio_session(recording_id: str, subject_id: str = "subject_001") -> bool:
+    """
+    Creates an audio session in MongoDB so multiple serverless lambdas can stream chunks.
+    """
+    col = get_mongo_collection(AUDIO_SESSIONS_COLLECTION)
+    if col is None:
+        return False
+    try:
+        col.update_one(
+            {"recording_id": recording_id},
+            {
+                "$set": {
+                    "recording_id": recording_id,
+                    "subject_id": subject_id,
+                    "next_chunk": 0,
+                    "bytes_received": 0,
+                    "last_chunk_bytes": 0,
+                    "dropped_samples": 0,
+                    "chunks": [],
+                    "created_at": datetime.now().isoformat(timespec="seconds"),
+                    "updated_at": datetime.now(),
+                }
+            },
+            upsert=True,
+        )
+        return True
+    except Exception as e:
+        logger.error(f"create_audio_session error: {e}")
+        return False
+
+
+def append_audio_chunk(recording_id: str, chunk_index: int, chunk_bytes: bytes, dropped: int = 0) -> dict:
+    """
+    Appends raw PCM chunk directly to MongoDB session across serverless lambdas.
+    """
+    from bson.binary import Binary
+    col = get_mongo_collection(AUDIO_SESSIONS_COLLECTION)
+    if col is None:
+        return {"status": "error", "error": "Database offline"}
+
+    try:
+        session = col.find_one({"recording_id": recording_id})
+        if not session:
+            return {"status": "not_found", "error": "Recording session not found or expired"}
+
+        expected = int(session.get("next_chunk", 0))
+
+        # ESP32 retry handling: If duplicate chunk, acknowledge success
+        if chunk_index == expected - 1 and len(chunk_bytes) == session.get("last_chunk_bytes"):
+            return {
+                "status": "duplicate_ignored",
+                "chunk_index": chunk_index,
+                "total_bytes": session.get("bytes_received", 0),
+            }
+
+        if chunk_index != expected:
+            return {
+                "status": "mismatch",
+                "error": "Unexpected chunk index",
+                "expected": expected,
+                "received": chunk_index,
+            }
+
+        new_total = session.get("bytes_received", 0) + len(chunk_bytes)
+        max_dropped = max(session.get("dropped_samples", 0), dropped)
+
+        col.update_one(
+            {"recording_id": recording_id},
+            {
+                "$push": {"chunks": Binary(chunk_bytes)},
+                "$set": {
+                    "next_chunk": expected + 1,
+                    "bytes_received": new_total,
+                    "last_chunk_bytes": len(chunk_bytes),
+                    "dropped_samples": max_dropped,
+                    "updated_at": datetime.now(),
+                },
+            },
+        )
+
+        return {
+            "status": "chunk_received",
+            "chunk_index": chunk_index,
+            "chunk_bytes": len(chunk_bytes),
+            "total_bytes": new_total,
+        }
+    except Exception as e:
+        logger.error(f"append_audio_chunk error: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+def finish_audio_session(recording_id: str) -> dict | None:
+    """
+    Retrieves all binary audio chunks for the session, concatenates them, and deletes the temp session.
+    """
+    col = get_mongo_collection(AUDIO_SESSIONS_COLLECTION)
+    if col is None:
+        return None
+
+    try:
+        session = col.find_one({"recording_id": recording_id})
+        if not session:
+            return None
+
+        # Clean up temporary session document from MongoDB
+        col.delete_one({"recording_id": recording_id})
+        return session
+    except Exception as e:
+        logger.error(f"finish_audio_session error: {e}")
+        return None
+
+
+def cancel_audio_session(recording_id: str):
+    """
+    Deletes an active audio session.
+    """
+    col = get_mongo_collection(AUDIO_SESSIONS_COLLECTION)
+    if col is not None:
+        try:
+            col.delete_one({"recording_id": recording_id})
+        except Exception:
+            pass
+
+
+# ------------------------------------------------------------------
+# Sensor Telemetry
+# ------------------------------------------------------------------
 def save_sensor_reading_to_mongodb(sensor_data: dict) -> dict:
     """
     Saves sensor reading directly into MongoDB sensor_readings collection.
@@ -99,13 +233,12 @@ def save_sensor_reading_to_mongodb(sensor_data: dict) -> dict:
     collection = get_mongo_collection(collection_name=SENSOR_COLLECTION)
     if collection is not None:
         try:
-            # Upsert by recording_id or received_at to prevent duplicate inserts
             rec_id = record.get("recording_id")
             if rec_id:
                 res = collection.update_one(
                     {"recording_id": rec_id},
                     {"$set": record},
-                    upsert=True
+                    upsert=True,
                 )
                 inserted_id = str(res.upserted_id) if res.upserted_id else rec_id
             else:
@@ -136,7 +269,6 @@ def get_sensor_history_from_mongodb(limit: int = 100) -> list:
     if collection is not None:
         try:
             records = list(collection.find({}, {"_id": 0}).sort("received_at", -1).limit(limit))
-            # Return in chronological order
             return list(reversed(records))
         except Exception as e:
             logger.error(f"MongoDB sensor history fetch error: {e}")
@@ -156,6 +288,9 @@ def get_latest_sensor_reading_from_mongodb() -> dict | None:
     return None
 
 
+# ------------------------------------------------------------------
+# Screenings & Assessments Records
+# ------------------------------------------------------------------
 def save_record_to_mongodb(record_data: dict) -> dict:
     """
     Saves or updates a complete record JSON (audio metadata + Cloudinary link + sensor telemetry + Q&A)
@@ -176,7 +311,7 @@ def save_record_to_mongodb(record_data: dict) -> dict:
                 res = collection.update_one(
                     {"recording_id": recording_id},
                     {"$set": update_data},
-                    upsert=True
+                    upsert=True,
                 )
                 inserted_id = str(res.upserted_id) if res.upserted_id else recording_id
             else:
@@ -223,7 +358,7 @@ def update_record_in_mongodb(recording_id: str, **sections) -> dict:
             collection.update_one(
                 {"recording_id": recording_id},
                 {"$set": update_data},
-                upsert=True
+                upsert=True,
             )
         except Exception as e:
             logger.error(f"MongoDB update_record error: {e}")
@@ -264,7 +399,6 @@ def get_latest_voice_record_from_mongodb() -> dict | None:
     collection = get_mongo_collection(collection_name=RECORDS_COLLECTION)
     if collection is not None:
         try:
-            # Query for records having audio.cloudinary.cloudinary_url or voice_cloudinary_url
             rec = collection.find_one(
                 {
                     "$or": [
@@ -273,7 +407,7 @@ def get_latest_voice_record_from_mongodb() -> dict | None:
                     ]
                 },
                 {"_id": 0},
-                sort=[("created_at", -1), ("saved_at", -1)]
+                sort=[("created_at", -1), ("saved_at", -1)],
             )
             return rec
         except Exception as e:

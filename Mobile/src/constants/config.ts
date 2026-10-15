@@ -1,6 +1,6 @@
 // Constant configuration for ThyroTrack IoT & Flask Backend
 
-export const FLASK_SERVER_URL = 'http://192.168.0.105:5000';
+export const FLASK_SERVER_URL = 'https://thyroid-monitoring.vercel.app';
 
 export interface DeviceConfig {
   readonly backendUrl: string;
@@ -84,7 +84,7 @@ export const updateScreeningSession = (data: Partial<ScreeningSession>): Screeni
 export const checkBackendHealth = async (): Promise<{ ok: boolean; message: string; data?: any }> => {
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
     const res = await fetch(`${FLASK_SERVER_URL}/api/health`, {
       method: 'GET',
       headers: {
@@ -101,7 +101,7 @@ export const checkBackendHealth = async (): Promise<{ ok: boolean; message: stri
     return { ok: false, message: `Server responded with status HTTP ${res.status}` };
   } catch (err: any) {
     if (err.name === 'AbortError') {
-      return { ok: false, message: 'Connection timed out (4s).' };
+      return { ok: false, message: 'Connection timed out (12s).' };
     }
     return { ok: false, message: err.message || 'Cannot reach Flask backend server' };
   }
