@@ -43,11 +43,11 @@
 // 1. NETWORK & FLASK SERVER SETTINGS
 // =====================================================
 
-const char* WIFI_SSID     = "moto";
-const char* WIFI_PASSWORD = "Akshaykumar401";
+const char* WIFI_SSID     = "Hanuman ";
+const char* WIFI_PASSWORD = "ak12344321kr";
 
 // Constant Flask server URL
-const char* SERVER = "http://10.139.134.234:5000";
+const char* SERVER = "http://192.168.0.105:5000";
 
 const char* DEVICE_ID  = "esp32-c3";
 const char* SUBJECT_ID = "subject_001";

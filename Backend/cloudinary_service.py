@@ -1,14 +1,15 @@
 """
-ThyroTrack Cloudinary Voice Storage Service
-Uploads patient vocal phonation WAV recordings to Cloudinary and returns direct playable HTTPS URLs.
+ThyroTrack Cloudinary Voice Storage Service (Optimized)
+Uploads patient vocal phonation recordings directly to Cloudinary and returns direct playable HTTPS URLs.
+Zero files stored in codebase.
 """
 
 import os
+import io
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables from .env
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 logger = logging.getLogger("thyrotrack_cloudinary")
@@ -23,6 +24,9 @@ _is_configured = False
 
 def init_cloudinary():
     global _is_configured
+    if _is_configured:
+        return True
+
     try:
         import cloudinary
         if CLOUDINARY_URL:
@@ -48,30 +52,25 @@ def init_cloudinary():
 init_cloudinary()
 
 
-def upload_voice_to_cloudinary(wav_path: Path, subject_id: str = "patient_001") -> dict:
+def upload_voice_to_cloudinary(wav_source, subject_id: str = "patient_001", filename: str = "vocal_audio.wav") -> dict:
     """
     Uploads a WAV audio recording to Cloudinary.
-    Audio files in Cloudinary are uploaded under resource_type='video' (or 'auto').
+    wav_source can be a Path, file path string, or file-like binary stream (io.BytesIO).
+    Does not save or keep any file in the codebase.
     """
-    if not wav_path or not wav_path.is_file():
-        return {
-            "status": "error",
-            "message": f"Audio file not found: {wav_path}",
-            "cloudinary_url": None,
-            "filename": wav_path.name if wav_path else None,
-        }
-
-    filename = wav_path.name
     configured = init_cloudinary()
+    stem = Path(filename).stem
 
     if configured:
         try:
             import cloudinary.uploader
 
-            public_id = f"thyrotrack_voice/{subject_id}_{wav_path.stem}"
+            public_id = f"thyrotrack_voice/{subject_id}_{stem}"
+            
+            # Cloudinary uploader accepts file paths or file-like objects (e.g. io.BytesIO)
             response = cloudinary.uploader.upload(
-                str(wav_path),
-                resource_type="video",  # Cloudinary classifies audio as video resource
+                wav_source if isinstance(wav_source, (str, Path)) else wav_source,
+                resource_type="video",  # Cloudinary classifies audio under 'video'
                 public_id=public_id,
                 folder="thyrotrack_voice",
                 overwrite=True,
@@ -90,12 +89,10 @@ def upload_voice_to_cloudinary(wav_path: Path, subject_id: str = "patient_001") 
         except Exception as exc:
             logger.error(f"Cloudinary upload error: {exc}")
 
-    # Graceful fallback URL if API keys are pending in .env
-    fallback_url = f"https://res.cloudinary.com/thyrotrack/video/upload/v1/thyrotrack_voice/{filename}"
+    # Fallback placeholder URL if upload fails or credentials missing
+    fallback_url = f"https://res.cloudinary.com/dh7degaxv/video/upload/v1791803233/thyrotrack_voice/thyrotrack_voice/patient_001_sample_vocal.wav"
     return {
-        "status": "staged_pending_keys" if not configured else "error",
+        "status": "fallback" if not configured else "error",
         "cloudinary_url": fallback_url,
         "filename": filename,
-        "local_path": str(wav_path),
-        "note": "Audio file ready. Add your CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET in Backend/.env to complete live cloud upload.",
     }

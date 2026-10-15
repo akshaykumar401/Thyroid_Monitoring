@@ -1,6 +1,6 @@
 // Constant configuration for ThyroTrack IoT & Flask Backend
 
-export const FLASK_SERVER_URL = 'http://10.139.134.234:5000';
+export const FLASK_SERVER_URL = 'http://192.168.0.105:5000';
 
 export interface DeviceConfig {
   readonly backendUrl: string;

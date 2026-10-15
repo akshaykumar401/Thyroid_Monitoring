@@ -142,4 +142,8 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
+# Local data directories
+thyroid_data/*
+!thyroid_data/**/.gitkeep
+
 # End of https://mrkandreev.name/snippets/gitignore-generator/#Flask,Python
