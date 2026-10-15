@@ -55,12 +55,13 @@ export interface ScreeningSession {
 
 export const CLOUDINARY_CLOUD_NAME = 'dh7degaxv';
 export const DEFAULT_CLOUDINARY_VOICE_URL =
-  'https://res.cloudinary.com/dh7degaxv/video/upload/v1791803233/thyrotrack_voice/thyrotrack_voice/patient_001_sample_vocal.wav';
+  'https://res.cloudinary.com/dh7degaxv/video/upload/v1792073746/thyrotrack_voice/thyrotrack_voice/subject_001_audio_20261015_141546_esp32_60a90110.wav';
 
 let activeSession: ScreeningSession = {
   subjectId: 'patient_001',
-  bodyTemp: 36.65,
-  pulseBpm: 72,
+  bodyTemp: 0,
+  pulseBpm: 0,
+  recordingId: 'esp32_60a90110',
   cloudinaryAudioUrl: DEFAULT_CLOUDINARY_VOICE_URL,
   qnaAnswers: [],
   isQnaGiven: false,

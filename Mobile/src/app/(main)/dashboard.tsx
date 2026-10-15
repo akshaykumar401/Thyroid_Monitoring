@@ -39,14 +39,15 @@ export default function DashboardScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
-  const [measuring, setMeasuring] = useState(false);
-  const [pulseBPM, setPulseBPM] = useState(0);
-  const [bodyTemp, setBodyTemp] = useState(0);
-  const [fetchedLive, setFetchedLive] = useState(false);
-  const [dataReady, setDataReady] = useState(true);
 
   // Initialize directly from active screening session
   const initialSession = getScreeningSession();
+  const [measuring, setMeasuring] = useState(false);
+  const [pulseBPM, setPulseBPM] = useState(initialSession.pulseBpm || 0);
+  const [bodyTemp, setBodyTemp] = useState(initialSession.bodyTemp || 0);
+  const [fetchedLive, setFetchedLive] = useState(false);
+  const [dataReady, setDataReady] = useState(true);
+
   const [isQnaGiven, setIsQnaGiven] = useState(
     Boolean(initialSession.isQnaGiven || (initialSession.qnaAnswers && initialSession.qnaAnswers.length > 0))
   );
@@ -54,39 +55,87 @@ export default function DashboardScreen() {
   // Live voice recording from Cloudinary & Backend
   const [voiceUrl, setVoiceUrl] = useState(
     initialSession.cloudinaryAudioUrl ||
-    'https://res.cloudinary.com/dh7degaxv/video/upload/v1791804202/thyrotrack_voice/thyrotrack_voice/subject_001_audio_20261012_165321_esp32_d0ab6076.wav'
+    'https://res.cloudinary.com/dh7degaxv/video/upload/v1792073746/thyrotrack_voice/thyrotrack_voice/subject_001_audio_20261015_141546_esp32_60a90110.wav'
   );
-  const [voiceLabel, setVoiceLabel] = useState('subject_001_audio_...esp32_d0ab6076.wav');
-  const [voiceRecordingId, setVoiceRecordingId] = useState(initialSession.recordingId || 'esp32_d0ab6076');
-  const [voiceDuration, setVoiceDuration] = useState(7.97);
+  const [voiceLabel, setVoiceLabel] = useState('audio_20261015_141546_esp32_60a90110.wav');
+  const [voiceRecordingId, setVoiceRecordingId] = useState(initialSession.recordingId || 'esp32_60a90110');
+  const [voiceDuration, setVoiceDuration] = useState(3.856);
 
   // Mutable ref so async polling always accesses latest recording ID without stale closure
-  const recordingIdRef = useRef<string>(initialSession.recordingId || 'esp32_d0ab6076');
+  const recordingIdRef = useRef<string>(initialSession.recordingId || 'esp32_60a90110');
 
   // Heartbeat animation
   const heartScale = useRef(new Animated.Value(1)).current;
   // Entrance animation
   const fadeAnim = useRef(new Animated.Value(0)).current;
 
-  // Re-check session and backend whenever Dashboard screen comes into focus
-  useFocusEffect(
-    useCallback(() => {
-      const session = getScreeningSession();
-      if (session.isQnaGiven || (session.qnaAnswers && session.qnaAnswers.length > 0)) {
-        setIsQnaGiven(true);
+  const fetchSensor = useCallback(async () => {
+    try {
+      const res = await fetch(`${FLASK_SERVER_URL}/api/sensor/latest?_t=${Date.now()}`, {
+        headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
+      });
+      if (res.ok) {
+        const d = await res.json();
+        const bpm = d.average_bpm ?? d.pulse_bpm ?? d.bpm;
+        const temp = d.average_temperature_c ?? d.body_temp ?? d.temperature;
+        if (typeof bpm === 'number' && bpm > 0) {
+          setPulseBPM(Math.round(bpm));
+        }
+        if (typeof temp === 'number' && temp > 0) {
+          setBodyTemp(parseFloat(temp.toFixed(2)));
+        }
+        if (d.recording_id) {
+          setVoiceRecordingId(prev => prev || d.recording_id);
+          recordingIdRef.current = d.recording_id;
+        }
+        updateScreeningSession({
+          bodyTemp: typeof temp === 'number' && temp > 0 ? parseFloat(temp.toFixed(2)) : undefined,
+          pulseBpm: typeof bpm === 'number' && bpm > 0 ? Math.round(bpm) : undefined,
+          recordingId: d.recording_id || recordingIdRef.current,
+        });
+        setFetchedLive(true);
+        setDataReady(true);
       }
-      // Immediate status check on screen focus
-      checkQna();
-    }, [])
-  );
+    } catch {
+      // Graceful fallback
+    }
+  }, []);
 
-  const checkQna = async () => {
+  const fetchVoice = useCallback(async () => {
+    try {
+      const res = await fetch(`${FLASK_SERVER_URL}/api/audio/latest-info?_t=${Date.now()}`, {
+        headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
+      });
+      if (res.ok) {
+        const d = await res.json();
+        if (d.cloudinary_url) {
+          setVoiceUrl(d.cloudinary_url);
+          if (d.filename) setVoiceLabel(d.filename);
+          if (d.recording_id) {
+            setVoiceRecordingId(d.recording_id);
+            recordingIdRef.current = d.recording_id;
+          }
+          if (d.duration_seconds) setVoiceDuration(d.duration_seconds);
+          updateScreeningSession({
+            cloudinaryAudioUrl: d.cloudinary_url,
+            recordingId: d.recording_id,
+          });
+        }
+      }
+    } catch {
+      // Graceful fallback
+    }
+  }, []);
+
+  const checkQna = useCallback(async () => {
     try {
       const recId = recordingIdRef.current || getScreeningSession().recordingId || '';
       const url = recId
-        ? `${FLASK_SERVER_URL}/api/qna/status?recording_id=${recId}`
-        : `${FLASK_SERVER_URL}/api/qna/status`;
-      const res = await fetch(url);
+        ? `${FLASK_SERVER_URL}/api/qna/status?recording_id=${recId}&_t=${Date.now()}`
+        : `${FLASK_SERVER_URL}/api/qna/status?_t=${Date.now()}`;
+      const res = await fetch(url, {
+        headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
+      });
       if (res.ok) {
         const d = await res.json();
         if (d.is_qna_given) {
@@ -104,7 +153,20 @@ export default function DashboardScreen() {
     } catch {
       // Retain current session state on network error
     }
-  };
+  }, []);
+
+  // Re-check session and backend whenever Dashboard screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      const session = getScreeningSession();
+      if (session.isQnaGiven || (session.qnaAnswers && session.qnaAnswers.length > 0)) {
+        setIsQnaGiven(true);
+      }
+      fetchSensor();
+      fetchVoice();
+      checkQna();
+    }, [fetchSensor, fetchVoice, checkQna])
+  );
 
   useEffect(() => {
     Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: true }).start();
@@ -118,56 +180,11 @@ export default function DashboardScreen() {
     );
     heartLoop.start();
 
-    let active = true;
-
     // Check local session state
     const session = getScreeningSession();
     if (session.isQnaGiven || (session.qnaAnswers && session.qnaAnswers.length > 0)) {
       setIsQnaGiven(true);
     }
-
-    const fetchSensor = async () => {
-      try {
-        const res = await fetch(`${FLASK_SERVER_URL}/api/sensor/latest`);
-        if (res.ok) {
-          const d = await res.json();
-          if (active) {
-            if (d.average_bpm > 0) setPulseBPM(Math.round(d.average_bpm));
-            if (d.average_temperature_c > 0) {
-              setBodyTemp(parseFloat(d.average_temperature_c.toFixed(2)));
-            }
-            setFetchedLive(true);
-            setDataReady(true);
-          }
-        }
-      } catch {
-        // Graceful defaults
-      }
-    };
-
-    const fetchVoice = async () => {
-      try {
-        const res = await fetch(`${FLASK_SERVER_URL}/api/audio/latest-info`);
-        if (res.ok) {
-          const d = await res.json();
-          if (active && d.cloudinary_url) {
-            setVoiceUrl(d.cloudinary_url);
-            if (d.filename) setVoiceLabel(d.filename);
-            if (d.recording_id) {
-              setVoiceRecordingId(d.recording_id);
-              recordingIdRef.current = d.recording_id;
-            }
-            if (d.duration_seconds) setVoiceDuration(d.duration_seconds);
-            updateScreeningSession({
-              cloudinaryAudioUrl: d.cloudinary_url,
-              recordingId: d.recording_id,
-            });
-          }
-        }
-      } catch {
-        // Graceful defaults
-      }
-    };
 
     fetchSensor();
     fetchVoice();
@@ -179,21 +196,18 @@ export default function DashboardScreen() {
     }, 3000);
 
     return () => {
-      active = false;
       clearInterval(poll);
       heartLoop.stop();
     };
-  }, []);
+  }, [fetchSensor, fetchVoice, checkQna]);
 
-  const handleRefresh = () => {
+  const handleRefresh = async () => {
     setMeasuring(true);
-    setTimeout(() => {
-      setPulseBPM(Math.floor(70 + Math.random() * 8));
-      const nextTemp = parseFloat((36.55 + Math.random() * 0.28).toFixed(2));
-      setBodyTemp(nextTemp);
+    try {
+      await Promise.all([fetchSensor(), fetchVoice(), checkQna()]);
+    } finally {
       setMeasuring(false);
-      setDataReady(true);
-    }, 800);
+    }
   };
 
   const handleStartQna = () => {
@@ -336,6 +350,7 @@ export default function DashboardScreen() {
 
           {/* Playable vocal biomarker audio */}
           <VoiceBiomarkerPlayer
+            key={voiceUrl}
             voiceUrl={voiceUrl}
             voiceLabel={voiceLabel}
             durationSec={voiceDuration}
