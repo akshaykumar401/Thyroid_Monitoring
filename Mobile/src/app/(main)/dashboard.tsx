@@ -49,7 +49,7 @@ export default function DashboardScreen() {
   const [dataReady, setDataReady] = useState(true);
 
   const [isQnaGiven, setIsQnaGiven] = useState(
-    Boolean(initialSession.isQnaGiven || (initialSession.qnaAnswers && initialSession.qnaAnswers.length > 0))
+    Boolean(initialSession.qnaAnswers && initialSession.qnaAnswers.length > 0)
   );
 
   // Live voice recording from Cloudinary & Backend
@@ -76,21 +76,24 @@ export default function DashboardScreen() {
       });
       if (res.ok) {
         const d = await res.json();
-        const bpm = d.average_bpm ?? d.pulse_bpm ?? d.bpm;
-        const temp = d.average_temperature_c ?? d.body_temp ?? d.temperature;
-        if (typeof bpm === 'number' && bpm > 0) {
-          setPulseBPM(Math.round(bpm));
-        }
-        if (typeof temp === 'number' && temp > 0) {
-          setBodyTemp(parseFloat(temp.toFixed(2)));
+        const rawBpm = d.average_bpm ?? d.pulse_bpm ?? d.bpm;
+        const rawTemp = d.average_temperature_c ?? d.body_temp ?? d.temperature;
+
+        // Properly handle 0 BPM when no pulse/finger is detected
+        const bpmVal = typeof rawBpm === 'number' && !isNaN(rawBpm) && rawBpm >= 0 ? Math.round(rawBpm) : 0;
+        const tempVal = typeof rawTemp === 'number' && !isNaN(rawTemp) && rawTemp > 0 ? parseFloat(rawTemp.toFixed(2)) : 0;
+
+        setPulseBPM(bpmVal);
+        if (tempVal > 0) {
+          setBodyTemp(tempVal);
         }
         if (d.recording_id) {
-          setVoiceRecordingId(prev => prev || d.recording_id);
+          setVoiceRecordingId(d.recording_id);
           recordingIdRef.current = d.recording_id;
         }
         updateScreeningSession({
-          bodyTemp: typeof temp === 'number' && temp > 0 ? parseFloat(temp.toFixed(2)) : undefined,
-          pulseBpm: typeof bpm === 'number' && bpm > 0 ? Math.round(bpm) : undefined,
+          bodyTemp: tempVal > 0 ? tempVal : undefined,
+          pulseBpm: bpmVal,
           recordingId: d.recording_id || recordingIdRef.current,
         });
         setFetchedLive(true);
@@ -138,16 +141,14 @@ export default function DashboardScreen() {
       });
       if (res.ok) {
         const d = await res.json();
-        if (d.is_qna_given) {
+        const currentSession = getScreeningSession();
+        const hasLocalAnswers = Boolean(currentSession.qnaAnswers && currentSession.qnaAnswers.length > 0);
+        if (d.is_qna_given || hasLocalAnswers) {
           setIsQnaGiven(true);
           updateScreeningSession({ isQnaGiven: true });
         } else {
-          // Never downgrade to false if local session has completed answers
-          const currentSession = getScreeningSession();
-          const hasLocalAnswers = currentSession.isQnaGiven || (currentSession.qnaAnswers && currentSession.qnaAnswers.length > 0);
-          if (!hasLocalAnswers) {
-            setIsQnaGiven(false);
-          }
+          setIsQnaGiven(false);
+          updateScreeningSession({ isQnaGiven: false });
         }
       }
     } catch {
@@ -159,9 +160,8 @@ export default function DashboardScreen() {
   useFocusEffect(
     useCallback(() => {
       const session = getScreeningSession();
-      if (session.isQnaGiven || (session.qnaAnswers && session.qnaAnswers.length > 0)) {
-        setIsQnaGiven(true);
-      }
+      const hasAnswers = Boolean(session.qnaAnswers && session.qnaAnswers.length > 0);
+      setIsQnaGiven(hasAnswers);
       fetchSensor();
       fetchVoice();
       checkQna();
@@ -375,60 +375,73 @@ export default function DashboardScreen() {
           </View>
         )}
 
-        {/* ── Research & Clinical Assessment Actions ── */}
-        <View style={styles.qnaCompletedCard}>
-          <View style={styles.qnaCompletedHeader}>
-            <View style={styles.qnaCompletedIcon}>
-              <CheckmarkCircleIcon size={22} color={isQnaGiven ? '#10B981' : '#0D9488'} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.qnaCompletedTitle}>
-                {isQnaGiven ? 'Clinical Q&A Recorded' : 'IoT Telemetry & Records Synced'}
-              </Text>
-              <Text style={styles.qnaCompletedSub}>
-                {isQnaGiven
-                  ? 'Your answers and sensor readings are saved in MongoDB Atlas'
-                  : 'Hardware sensors & vocal sample verified. View submitted response'}
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.qnaCompletedActions}>
-            <TouchableOpacity
-              style={styles.viewResultBtn}
-              onPress={() => {
-                updateScreeningSession({
-                  bodyTemp,
-                  pulseBpm: pulseBPM,
-                  cloudinaryAudioUrl: voiceUrl,
-                  recordingId: voiceRecordingId,
-                });
-                router.push('/(main)/result');
-              }}
-              activeOpacity={0.85}
+        {/* ── Dynamic QNA Action Button (Based on isQnaGiven) ── */}
+        {!isQnaGiven ? (
+          <TouchableOpacity
+            style={styles.continueBtn}
+            onPress={handleStartQna}
+            activeOpacity={0.85}
+          >
+            <LinearGradient
+              colors={['#0F2438', '#1E3A5F']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={styles.continueGrad}
             >
-              <LinearGradient
-                colors={['#0D9488', '#0284C7']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.viewResultGrad}
+              <SparklesIcon size={18} color="#5EEAD4" />
+              <Text style={styles.continueText}>Complete Clinical Q&A</Text>
+              <ArrowRightIcon size={18} color="#FFFFFF" />
+            </LinearGradient>
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.qnaCompletedCard}>
+            <View style={styles.qnaCompletedHeader}>
+              <View style={styles.qnaCompletedIcon}>
+                <CheckmarkCircleIcon size={22} color="#10B981" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.qnaCompletedTitle}>Clinical Q&A Completed</Text>
+                <Text style={styles.qnaCompletedSub}>
+                  Your responses are saved in MongoDB Atlas
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.qnaCompletedActions}>
+              <TouchableOpacity
+                style={styles.viewResultBtn}
+                onPress={() => {
+                  updateScreeningSession({
+                    bodyTemp,
+                    pulseBpm: pulseBPM,
+                    cloudinaryAudioUrl: voiceUrl,
+                    recordingId: voiceRecordingId,
+                  });
+                  router.push('/(main)/result');
+                }}
+                activeOpacity={0.85}
               >
-                <Text style={styles.viewResultText}>View Submitted Responses</Text>
-                <ArrowRightIcon size={15} color="#FFFFFF" />
-              </LinearGradient>
-            </TouchableOpacity>
+                <LinearGradient
+                  colors={['#0D9488', '#0284C7']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.viewResultGrad}
+                >
+                  <Text style={styles.viewResultText}>View Submitted Responses</Text>
+                  <ArrowRightIcon size={15} color="#FFFFFF" />
+                </LinearGradient>
+              </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.retakeBtn}
-              onPress={handleStartQna}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.retakeText}>
-                {isQnaGiven ? 'Retake Clinical Q&A' : 'Answer Clinical Q&A'}
-              </Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.retakeBtn}
+                onPress={handleStartQna}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.retakeText}>Retake Clinical Q&A</Text>
+              </TouchableOpacity>
+            </View>
           </View>
-        </View>
+        )}
       </ScrollView>
     </View>
   );

@@ -445,11 +445,13 @@ def sensor_batch():
 def sensor_latest():
     reading = get_latest_sensor_reading_from_mongodb()
     if reading:
+        if reading.get("average_bpm") is None:
+            reading["average_bpm"] = 0.0
         return jsonify(reading), 200
 
     return jsonify({
         "device_id": "esp32-c3",
-        "average_bpm": 72.0,
+        "average_bpm": 0.0,
         "average_temperature_c": 36.65,
         "duration_seconds": 30.0,
         "received_at": datetime.now().isoformat(timespec="seconds"),
@@ -650,28 +652,23 @@ def qna_status():
 
     if rec_id:
         for r in recs:
-            if r.get("recording_id") == rec_id and (r.get("is_qna_given") or len(r.get("qna_responses") or []) > 0):
+            if r.get("recording_id") == rec_id:
+                has_qna = bool(r.get("is_qna_given") or len(r.get("qna_responses") or []) > 0)
                 return jsonify({
                     "recording_id": rec_id,
-                    "is_qna_given": True,
-                    "qna_count": len(r.get("qna_responses") or []),
-                }), 200
-        for r in recs:
-            if r.get("type") == "qna_submission" or r.get("is_qna_given") or len(r.get("qna_responses") or []) > 0:
-                return jsonify({
-                    "recording_id": r.get("recording_id"),
-                    "is_qna_given": True,
+                    "is_qna_given": has_qna,
                     "qna_count": len(r.get("qna_responses") or []),
                 }), 200
         return jsonify({"recording_id": rec_id, "is_qna_given": False, "qna_count": 0}), 200
 
-    for r in recs:
-        if r.get("is_qna_given") or len(r.get("qna_responses") or []) > 0:
-            return jsonify({
-                "recording_id": r.get("recording_id"),
-                "is_qna_given": True,
-                "qna_count": len(r.get("qna_responses") or []),
-            }), 200
+    if recs:
+        latest = recs[0]
+        has_qna = bool(latest.get("is_qna_given") or len(latest.get("qna_responses") or []) > 0)
+        return jsonify({
+            "recording_id": latest.get("recording_id"),
+            "is_qna_given": has_qna,
+            "qna_count": len(latest.get("qna_responses") or []),
+        }), 200
 
     return jsonify({"is_qna_given": False, "qna_count": 0}), 200
 
