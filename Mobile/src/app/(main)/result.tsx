@@ -83,7 +83,7 @@ export default function ResultScreen() {
       setSaveState('saving');
 
       // Case 1: If user just answered questions in this session, save them to MongoDB
-      if (currentSession.qnaAnswers && currentSession.qnaAnswers.length > 0) {
+      if (currentSession.answersPendingSave && currentSession.qnaAnswers && currentSession.qnaAnswers.length > 0) {
         const payload = {
           subject_id: currentSession.subjectId || 'patient_001',
           recording_id: currentSession.recordingId || undefined,
@@ -118,6 +118,7 @@ export default function ResultScreen() {
             updateScreeningSession({
               mongodbId: result.insertedId,
               isQnaGiven: true,
+              answersPendingSave: false,
               recordingId: data.recording_id || currentSession.recordingId,
             });
             return;
@@ -127,7 +128,7 @@ export default function ResultScreen() {
         }
       }
 
-      // Case 2: User opened "View Submitted Responses" without answering questions on this phone session
+      // Case 2: Read-only view! User clicked "View Submitted Responses" without just filling out QnA.
       try {
         const recId = currentSession.recordingId;
         let foundRecord: any = null;
@@ -142,9 +143,13 @@ export default function ResultScreen() {
         if (foundRecord) {
           const recAnswers = foundRecord.qna_responses || [];
           setAnswers(recAnswers);
-          if (recAnswers.length > 0) {
-            updateScreeningSession({ qnaAnswers: recAnswers, isQnaGiven: true });
-          }
+          const hasQna = Boolean(foundRecord.is_qna_given || recAnswers.length > 0);
+          updateScreeningSession({
+            qnaAnswers: recAnswers,
+            isQnaGiven: hasQna,
+            answersPendingSave: false,
+          });
+
           setSaveResult({
             insertedId: foundRecord._id || foundRecord.recording_id || 'db_record',
             recordingId: foundRecord.recording_id || currentSession.recordingId || 'N/A',
@@ -160,6 +165,9 @@ export default function ResultScreen() {
       } catch {
         // Fallback
       }
+
+      setAnswers([]);
+      updateScreeningSession({ qnaAnswers: [], isQnaGiven: false, answersPendingSave: false });
 
       // Default safe display if offline or brand new session
       setSaveResult({

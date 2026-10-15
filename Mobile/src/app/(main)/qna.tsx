@@ -77,6 +77,7 @@ export default function QnaScreen() {
       updateScreeningSession({
         qnaAnswers: formattedAnswers,
         isQnaGiven: true,
+        answersPendingSave: true,
       });
 
       router.push('/(main)/result');

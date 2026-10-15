@@ -49,6 +49,7 @@ export interface ScreeningSession {
   pulseBpm?: number;
   qnaAnswers?: { questionId: number; category: string; question?: string; answer: string; score?: number }[];
   isQnaGiven?: boolean;
+  answersPendingSave?: boolean;
   cloudinaryAudioUrl?: string;
   mongodbId?: string;
 }
